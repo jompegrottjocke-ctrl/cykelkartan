@@ -1,0 +1,22 @@
+name: Windows
+on: [push, pull_request, workflow_dispatch]
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Bygg och testa
+        shell: cmd
+        run: build_windows.bat
+      - name: Skapa installationsprogram
+        shell: cmd
+        run: '"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\windows.iss'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CykelframjandetMalmo-Windows
+          path: |
+            dist/CykelframjandetMalmo/
+            installer/Output/*.exe
