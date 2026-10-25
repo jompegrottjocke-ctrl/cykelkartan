@@ -121,11 +121,12 @@ class SwedenData:
                 return db.execute('SELECT w.id,w.kind,w.tags,w.nodes,w.coords FROM ways w INDEXED BY ways_zoom CROSS JOIN bounds b ON b.id=w.id WHERE w.minzoom<=? AND b.west<=? AND b.east>=? AND b.south<=? AND b.north>=? LIMIT ?', (zoom,east,west,north,south,limit)).fetchall()
             return db.execute('SELECT w.id,w.kind,w.tags,w.nodes,w.coords FROM bounds b JOIN ways w ON w.id=b.id WHERE b.west<=? AND b.east>=? AND b.south<=? AND b.north>=? AND w.minzoom<=? AND (?=0 OR w.kind=?) LIMIT ?', (east,west,north,south,zoom,int(roads_only),'road',limit)).fetchall()
     def features(self,bbox,zoom):
-        rows=self.rows(bbox,15001,zoom);features=[]
-        for identifier,kind,tags,_,coords in rows[:15000]:
+        limit=300000 if zoom<9 else 15000
+        rows=self.rows(bbox,limit+1,zoom);features=[]
+        for identifier,kind,tags,_,coords in rows[:limit]:
             tags=json.loads(tags);coords=json.loads(coords)
             if zoom<13 and kind=='building':continue
-            if zoom<9 and (kind!='road' or tags.get('highway') not in ('motorway','trunk','primary','secondary')):continue
+            if zoom<9 and kind=='road' and tags.get('highway') not in ('motorway','trunk','primary','secondary','tertiary'):continue
             if zoom<12 and kind=='road' and tags.get('highway') in ('service','footway','path','steps'):continue
             from app.routing import classify
             polygon=kind!='road' and coords[0]==coords[-1] and len(coords)>=4
@@ -135,8 +136,20 @@ class SwedenData:
                 simple=shape.simplify(360/(256*2**zoom),preserve_topology=True)
                 coords=list(simple.exterior.coords) if polygon else list(simple.coords)
             features.append({'type':'Feature','properties':{'kind':kind,'road':classify(tags),'highway':tags.get('highway',''),'name':tags.get('name','')},'geometry':{'type':'Polygon' if polygon else 'LineString','coordinates':[coords] if polygon else coords}})
-        return {'type':'FeatureCollection','features':features,'truncated':len(rows)>15000}
-    def graph(self,points,padding=.15):
+        if zoom<9:
+            # Sammanfoga kartlinjer i översikten; ruttgeometrin i databasen ändras inte.
+            from shapely.geometry import MultiLineString,mapping
+            from shapely.ops import linemerge
+            groups={}
+            for feature in features:
+                props=feature['properties'];key=(props['kind'],props['road'],props['highway'])
+                groups.setdefault(key,[]).append(feature['geometry']['coordinates'])
+            features=[]
+            for (kind,road,highway),lines in groups.items():
+                merged=linemerge(MultiLineString(lines)).simplify(360/(256*2**zoom),preserve_topology=True)
+                features.append({'type':'Feature','properties':dict(kind=kind,road=road,highway=highway),'geometry':mapping(merged)})
+        return {'type':'FeatureCollection','features':features,'truncated':len(rows)>limit}
+    def graph(self,points,padding=.03):
         from app.routing import allowed
         lats=[p[0] for p in points];lons=[p[1] for p in points]
         bbox=[min(lons)-padding,min(lats)-padding,max(lons)+padding,max(lats)+padding]

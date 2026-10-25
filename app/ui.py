@@ -30,7 +30,7 @@ class Bridge(QObject):
     @Slot()
     def ready(self):
         self.w.map_ready=True
-        self.w.configure_background()
+        if self.w.configure_background() is False:return
         pos=self.w.store.get('position',[55.605,13.0038,13])
         self.w.js(f'map.setView([{pos[0]},{pos[1]}],{pos[2]})')
         if self.w.sweden is not None:self.w.loaded(None)
@@ -66,6 +66,11 @@ class Window(QMainWindow):
         self.store=Store(directory/'settings.sqlite');self.data=MapData(directory/'map')
         self.data.select_region(self.store.get('region','Malmö kommun'))
         self.offline_server=None;self.sweden=None;self.cancel_event=Event()
+        country_path=self.store.get('national_path')
+        if country_path and Path(country_path).is_file():
+            from app.national import SwedenData
+            try:self.sweden=SwedenData(country_path)
+            except Exception:pass
         self.start=None;self.end=None;self.via=[];self.route=None;self.map_ready=False;self.jobs=[];self.busy=False
         splitter=QSplitter();self.setCentralWidget(splitter)
         panel=QWidget();panel.setMinimumWidth(340);panel.setMaximumWidth(440);layout=QVBoxLayout(panel);layout.setContentsMargins(24,24,24,20);layout.setSpacing(12)
@@ -101,6 +106,8 @@ class Window(QMainWindow):
         scroll=QScrollArea();scroll.setWidgetResizable(True);scroll.setWidget(panel);scroll.setMinimumWidth(360);scroll.setMaximumWidth(460)
         self.cancel_button=QPushButton('Avbryt hämtning/bearbetning');self.cancel_button.setVisible(False);self.cancel_button.clicked.connect(self.cancel_event.set);layout.addWidget(self.cancel_button)
         splitter.addWidget(scroll)
+        self.region_button.setEnabled(self.sweden is None);self.update_button.setEnabled(self.sweden is None)
+        self.wait.setEnabled(self.sweden is None)
         self.web=QWebEngineView();splitter.addWidget(self.web);splitter.setSizes([390,990])
         self.web.settings().setAttribute(QWebEngineSettings.LocalContentCanAccessRemoteUrls,True)
         self.channel=QWebChannel();self.bridge=Bridge(self);self.channel.registerObject('bridge',self.bridge);self.web.page().setWebChannel(self.channel)
@@ -152,7 +159,7 @@ class Window(QMainWindow):
     def loaded(self,g):
         if self.sweden is not None:
             self.js('dark('+json.dumps(self.theme.isChecked())+')')
-            self.statusBar().showMessage('Sverige offline: karta och ruttdata finns lokalt. Adressökning kräver internet.');return
+            self.statusBar().showMessage('Sveriges ruttdata är tillgängliga lokalt. Adressökning kräver internet.');return
         if g is None:self.statusBar().showMessage('Inga lokala ruttdata för valt område. Hämta Sverige för offlinebruk eller hämta valt ruttområde.')
         else:self.js('infrastructure('+json.dumps(self.data.features())+')');self.statusBar().showMessage('Lokalt vägnät tillgängligt. Senast uppdaterat: '+self.store.get('updated:'+self.data.region,self.store.get('updated','okänt')))
         self.js('dark('+json.dumps(self.theme.isChecked())+')')
@@ -167,9 +174,14 @@ class Window(QMainWindow):
                 else:server=OfflineServer(path)
             except Exception as e:
                 self.statusBar().showMessage('Offlinekartan kunde inte öppnas. Välj filen igen: '+str(e))
-                return  # Ingen tyst övergång till internet.
-            previous=self.offline_server;self.offline_server=server;self.sweden=getattr(server,'data',None)
+                return False  # Ingen tyst övergång till internet.
+            previous=self.offline_server;self.offline_server=server
+            if hasattr(server,'data'):
+                self.sweden=server.data;self.store.set('national_path',str(self.sweden.path))
             self.region_button.setEnabled(self.sweden is None);self.update_button.setEnabled(self.sweden is None)
+            self.wait.setEnabled(self.sweden is None)
+            self.wait.setToolTip('Väntetid beräknas ännu inte i Sverigeläget.' if self.sweden else '')
+            if self.sweden:self.wait.setChecked(False)
             self.js('infrastructure([]); backgroundMap('+json.dumps(server.config())+')')
             if previous:previous.close()
             self.statusBar().showMessage('Offlinekarta: '+Path(path).name)
@@ -177,7 +189,7 @@ class Window(QMainWindow):
     def install_sweden(self):
         if self.busy:return
         if self.sweden is not None:
-            QMessageBox.information(self,APP_NAME,'Sverige är redan installerat. Kartan och ruttdata används från disk utan ny hämtning.');return
+            self.use_offline(str(self.sweden.path));return
         reply=QMessageBox.question(self,APP_NAME,'Hämta hela Sverige från Geofabrik och förbered karta och ruttdata?\n\nDet kräver minst 8 GB ledigt diskutrymme. 16 GB RAM rekommenderas vid bearbetning på Windows. Hämtning och engångsbearbetning kan ta lång tid. Efteråt behövs ingen kommunhämtning för lokala cykelrutter. Adressökning kräver fortfarande internet.')
         if reply!=QMessageBox.Yes:return
         folder=self.data.directory/'sweden'
@@ -197,7 +209,7 @@ class Window(QMainWindow):
     def online(self):
         self.store.set('offline_path',None)
         if self.offline_server:self.offline_server.close();self.offline_server=None
-        self.sweden=None;self.region_button.setEnabled(True);self.update_button.setEnabled(True)
+        self.region_button.setEnabled(self.sweden is None);self.update_button.setEnabled(self.sweden is None)
         self.js('backgroundMap(null)');self.statusBar().showMessage('Internetkarta vald. Ruttdata finns separat på disk.')
     def select_region(self):
         if self.busy:return
@@ -218,9 +230,11 @@ class Window(QMainWindow):
         def route_job():
             if national is None:return calculate(*args)
             import networkx as nx
-            try:graph=national.graph(args[1]);return calculate(graph,*args[1:])
+            try:graph=national.graph(args[1]);r=calculate(graph,*args[1:])
             except nx.NetworkXNoPath:
-                graph=national.graph(args[1],padding=.5);return calculate(graph,*args[1:])
+                graph=national.graph(args[1],padding=.15);r=calculate(graph,*args[1:])
+            r['wait_available']=False
+            return r
         self.work(route_job,self.result,'Beräknar cykelrutt från lokala data …')
     def result(self,r):
         self.route=r;self.js('route('+json.dumps(r['coords'])+')');self.steps.clear();self.steps.addItems([s['text'] for s in r['instructions']]);self.render_summary();self.statusBar().showMessage('Rutt beräknad från OpenStreetMap. Prioriteringar är modeller, ingen säkerhetsgaranti.')
@@ -228,7 +242,8 @@ class Window(QMainWindow):
         if not self.route:return
         r=self.route;r['minutes']=minutes(r['meters'],self.speed.value())
         shares=' · '.join(f'{k}: {v/r["meters"]:.0%}' for k,v in r['distribution'].items())
-        self.summary.setText(f'{r["meters"]/1000:.2f} km  •  {r["minutes"]+r["wait"]:.0f} min\nCykeltid {r["minutes"]:.1f} min · Väntetid ≈ {r["wait"]:.1f} min\n{self.speed.value()} km/h · {len(r["points"])-2} mellanstopp\n{shares}')
+        wait_text=f'Väntetid ≈ {r["wait"]:.1f} min' if r.get('wait_available',True) else 'Väntetid ej beräknad'
+        self.summary.setText(f'{r["meters"]/1000:.2f} km  •  {r["minutes"]+r["wait"]:.0f} min\nCykeltid {r["minutes"]:.1f} min · {wait_text}\n{self.speed.value()} km/h · {len(r["points"])-2} mellanstopp\n{shares}')
     def speed_changed(self,value):
         self.speed_label.setText(f'Cykelhastighet   {value} km/h');self.store.set('speed',value);self.render_summary()
     def theme_changed(self,dark):

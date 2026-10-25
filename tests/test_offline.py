@@ -97,3 +97,12 @@ def test_cancel_import_keeps_previous(national,tmp_path):
     def cancel(message):raise ValueError('Avbruten')
     with pytest.raises(ValueError,match='Avbruten'):build_database(tmp_path/'unused.osm',national,cancel)
     assert national.read_bytes()==before
+
+def test_country_overview_preserves_road_extent(national):
+    with sqlite3.connect(national) as db:
+        db.execute('UPDATE ways SET tags=?,minzoom=4',(json.dumps({'highway':'trunk'}),))
+    overview=SwedenData(national).features([18,59,19,60],5)
+    assert not overview['truncated']
+    assert len(overview['features'])==1
+    from shapely.geometry import shape
+    assert shape(overview['features'][0]['geometry']).bounds==pytest.approx((18.060,59.330,18.061,59.331))

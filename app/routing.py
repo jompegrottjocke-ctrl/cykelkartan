@@ -22,7 +22,7 @@ def classify(tags):
     return 'övrig'
 
 def allowed(tags):
-    return tags.get('bicycle') not in ('no', 'private', 'dismount') and not (tags.get('access') in ('no', 'private') and tags.get('bicycle') not in ('yes', 'designated', 'permissive')) and tags.get('highway') not in ('motorway', 'motorway_link', 'steps')
+    return tags.get('bicycle') not in ('no', 'private', 'dismount') and not (tags.get('access') in ('no', 'private') and tags.get('bicycle') not in ('yes', 'designated', 'permissive')) and tags.get('highway') not in ('motorway', 'motorway_link', 'steps', 'elevator', 'escalator', 'corridor', 'bus_guideway', 'construction', 'proposed', 'abandoned', 'raceway', 'razed')
 
 def minutes(meters, speed):
     if not 5 <= speed <= 40:
@@ -54,17 +54,20 @@ def calculate(graph, points, mode=MODES[0], speed=15, detour=20, wait=False):
         if mode == MODES[3]: return length * (.65 if kind in ('separat','gemensam','cykelgata') else 1.2)
         return length
     nodes=[]
-    for lat,lon in points:
-        node=ox.distance.nearest_nodes(g,lon,lat)
+    nearest=ox.distance.nearest_nodes(g,[p[1] for p in points],[p[0] for p in points])
+    for (lat,lon),node in zip(points,nearest):
         n=g.nodes[node]
         distance=math.hypot((float(n['y'])-lat)*111000,(float(n['x'])-lon)*62000)
         if distance>1000: raise ValueError('Punkten ligger för långt från det lokala cykelvägnätet.')
         nodes.append(node)
+    def path(a,b,weight):
+        try:return nx.shortest_path(g,a,b,weight=weight)
+        except nx.NetworkXNoPath:raise nx.NetworkXNoPath('Ingen sammanhängande cykelrutt hittades mellan punkterna. Välj punkter på anslutna cykelbara vägar.') from None
     route=[]
     for a,b in zip(nodes,nodes[1:]):
-        selected=nx.shortest_path(g,a,b,weight=cost)
+        selected=path(a,b,cost)
         if mode == MODES[4]:
-            shortest=nx.shortest_path(g,a,b,weight='length')
+            shortest=path(a,b,'length')
             def length(path): return sum(min(float(d['length']) for d in g[u][v].values()) for u,v in zip(path,path[1:]))
             if length(selected)>length(shortest)*(1+detour/100): selected=shortest
         route.extend(selected if not route else selected[1:])
@@ -95,4 +98,5 @@ def export_route(route, path):
         ElementTree(root).write(path,encoding='utf-8',xml_declaration=True)
     else:
         data={'type':'Feature','geometry':{'type':'LineString','coordinates':[[lon,lat] for lat,lon in route['coords']]},'properties':{k:route[k] for k in ('meters','minutes','wait','mode')}}
+        data['properties']['wait_available']=route.get('wait_available',True)
         with open(path,'w',encoding='utf-8') as f: json.dump(data,f,ensure_ascii=False)

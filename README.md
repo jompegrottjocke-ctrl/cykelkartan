@@ -50,10 +50,12 @@ build_windows.bat
 
 Bygget skapar `dist\CykelframjandetMalmo\CykelframjandetMalmo.exe` med Qt WebEngine, lokal Leaflet och ikon. Behåll hela distributionsmappen. För installationsprogram med genvägar: installera Inno Setup 6 och kompilera `installer/windows.iss`. GitHub Actions-flödet **Windows** bygger och laddar upp distributionsmapp och installationsprogram som artefakt.
 
-Windows-bygge och installation är inte verifierade från Linux-miljön. Hämta artefakten först efter ett lyckat Windows-flöde och testa den på Windows 10/11.
+Windows-bygget verifieras i GitHub Actions, inklusive start av färdig EXE, paketerade kartresurser, OSM-import och en lokal provrutt. Manuell installation och skärmskalning på Windows 10/11 är fortfarande inte verifierade. Hämta artefakten från den senaste lyckade Windows-körningen.
 
 ## Verifierad omfattning och återstående arbete
 
 Grundversionen har körts i Qt:s headless-läge med fungerande WebChannel-brygga. Automatiska tester använder uttryckliga syntetiska graffixturer för ruttregler, alla ruttlägen, export, lagring och skydd av tidigare data vid misslyckad uppdatering. Offlinefunktionerna testas även med syntetiska OSM- och MBTiles-fixturer: lokal HTTP-leverans, kartindex, verkliga nätverkskanter, cykelundantag och skydd av tidigare filer vid kontrollsummefel/avbrott. Se [offlineanvisningen](docs/offline-sverige.md) för omfattning och begränsningar. Internetbakgrunden har tidigare hindrats av miljöns proxycertifikat; TLS-kontroll har inte stängts av.
 
 Den fullständiga [kravspecifikationen](docs/kravspecifikation.md) kvarstår. Följande ingår ännu inte: alternativrutter, fullständig cykelspecifik enkelriktningshantering, svänginstruktioner, park-/vattenanalys, parkerings- och pumplager, favoritplatser, sökhistorik, radering av rutter i UI, fullständigt inställningsfönster, satellitlager, komplett offlinegeokodning, startskärm och verifiering av Windows-skalning. Detta är en körbar grundversion, inte en färdig implementering av samtliga krav.
+
+[Resultat från verifiering av hela Sverige och offlinebruk](docs/verifiering-offline.md).

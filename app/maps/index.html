@@ -3,6 +3,7 @@
 <div id="map"></div><script src="leaflet.js"></script><script src="qrc:///qtwebchannel/qwebchannel.js"></script><script>
 const map=L.map('map',{zoomControl:false}).setView([55.605,13.0038],13);
 L.control.zoom({position:'topright'}).addTo(map);
+map.createPane('basepolygons').style.zIndex=350;map.createPane('routes').style.zIndex=450;
 const tiles=L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>-bidragsgivare',maxZoom:19});
 let background=null, swedenConfig=null, pending=null;
 async function refreshSweden(){
@@ -12,7 +13,8 @@ async function refreshSweden(){
  try{
   const response=await fetch(url,{signal:pending.signal});if(!response.ok)throw new Error('Kartindexet svarade inte');
   const data=await response.json();if(!swedenConfig)return;
-  background.clearLayers();background.addData(data);
+  background.clearLayers();Object.values(layers).forEach(l=>l.clearLayers());
+  for(const feature of data.features){if(feature.properties.kind==='road')layers[feature.properties.road].addData(feature);else background.addData(feature)}
   if(bridge)bridge.nationalStatus(data.truncated);
  }catch(e){if(e.name!=='AbortError' && bridge)bridge.offlineMissing()}
 }
@@ -24,7 +26,7 @@ function backgroundMap(config){
  if(!config){background=tiles;map.setMinZoom(0);map.setMaxZoom(19);tiles.addTo(map);return}
  if(config.kind==='sweden'){
   swedenConfig=config;map.setMaxBounds(config.bounds);map.setMinZoom(4);map.setMaxZoom(19);
-  background=L.geoJSON(null,{renderer:L.canvas(),onEachFeature:(f,l)=>{if(f.properties.name){const el=document.createElement('span');el.textContent=f.properties.name;l.bindTooltip(el)}},style:f=>{
+  background=L.geoJSON(null,{pane:'basepolygons',renderer:L.canvas({pane:'basepolygons'}),onEachFeature:(f,l)=>{if(f.properties.name){const el=document.createElement('span');el.textContent=f.properties.name;l.bindTooltip(el)}},style:f=>{
    const p=f.properties;
    if(p.kind==='coastline')return {color:'#8fb9ca',weight:1.5};
    if(p.kind==='water')return {color:'#a9cbd8',fillColor:'#bedce6',weight:1,fillOpacity:.9};
@@ -33,7 +35,7 @@ function backgroundMap(config){
    const cycle=p.road!=='övrig';return {color:cycle?colors[p.road]:['motorway','trunk','primary'].includes(p.highway)?'#d1b481':'#bcc6be',weight:cycle?3:2,opacity:1};
   }}).addTo(map);
   if(!map._offlineAttribution){map.attributionControl.addAttribution('© OpenStreetMap-bidragsgivare · Geofabrik · ODbL');map._offlineAttribution=true}
-  map.fitBounds(config.bounds);refreshSweden();return;
+  refreshSweden();return;
  }
  const safe=document.createElement('span');safe.textContent=config.attribution;
  background=L.tileLayer(config.url,{minZoom:config.minZoom,maxZoom:config.maxZoom,attribution:safe.innerHTML,noWrap:true,bounds:config.bounds||undefined});
@@ -43,7 +45,7 @@ function backgroundMap(config){
 }
 function sweden(){map.setView([62,16],Math.max(5,map.getMinZoom()))}
 const colors={'separat':'#16856a','gemensam':'#428cb4','fält':'#d9973c','cykelgata':'#9161ad','övrig':'#9ba8a2'};
-const layers={}; for(const [kind,color] of Object.entries(colors))layers[kind]=L.geoJSON(null,{style:{color,weight:3,opacity:.8}}).addTo(map);
+const layers={}; for(const [kind,color] of Object.entries(colors))layers[kind]=L.geoJSON(null,{renderer:L.canvas(),style:{color,weight:kind==='övrig'?2:3,opacity:.85},onEachFeature:(f,l)=>{if(f.properties.name){const el=document.createElement('span');el.textContent=f.properties.name;l.bindTooltip(el)}}}).addTo(map);
 let line=L.layerGroup().addTo(map), markers=L.layerGroup().addTo(map), bridge=null;
 L.control.layers({},layers,{position:'topright'}).addTo(map);
 const legend=L.control({position:'bottomleft'});legend.onAdd=()=>{const el=L.DomUtil.create('div','legend');el.innerHTML='<b>Cykelvägar</b><br>'+Object.entries(colors).map(([k,c])=>`<span style="color:${c}">●</span> ${k}`).join('<br>');return el};legend.addTo(map);
@@ -53,9 +55,9 @@ new QWebChannel(qt.webChannelTransport,ch=>{bridge=ch.objects.bridge;bridge.read
 map.on('contextmenu',e=>{const el=document.createElement('div');for(const [name,kind] of [['Ange som startpunkt','start'],['Ange som destination','end'],['Lägg till mellanstopp','via']]){const b=document.createElement('button');b.textContent=name;b.style='display:block;margin:6px;padding:8px';b.onclick=()=>{bridge.choose(kind,e.latlng.lat,e.latlng.lng);map.closePopup()};el.appendChild(b)}L.popup().setLatLng(e.latlng).setContent(el).openOn(map)});
 map.on('moveend',()=>{if(bridge)bridge.position(map.getCenter().lat,map.getCenter().lng,map.getZoom())});
 function points(data){markers.clearLayers();data.forEach((p,i)=>{const kind=i===0?'start':i===data.length-1?'end':'via';const color=kind==='start'?'#16856a':kind==='end'?'#cd6159':'#428cb4';const icon=L.divIcon({html:`<div style="background:${color};border:3px solid white;border-radius:50%;width:18px;height:18px;box-shadow:0 2px 8px #555"></div>`,className:'',iconSize:[24,24]});const m=L.marker(p,{icon,draggable:true}).addTo(markers);m.on('dragend',()=>{const ll=m.getLatLng();bridge.moved(i,ll.lat,ll.lng)})})}
-function route(data){line.clearLayers();const l=L.polyline(data,{color:'#16856a',weight:7,opacity:.95}).addTo(line);map.fitBounds(l.getBounds(),{padding:[45,45]})}
+function route(data){line.clearLayers();const l=L.polyline(data,{pane:'routes',color:'#16856a',weight:7,opacity:.95}).addTo(line);map.fitBounds(l.getBounds(),{padding:[45,45]})}
 function infrastructure(features){Object.values(layers).forEach(l=>l.clearLayers());for(const f of features)layers[f.properties.kind].addData(f)}
-function highlight(coords){L.polyline(coords,{color:'#f3b54a',weight:9}).addTo(line);map.fitBounds(L.latLngBounds(coords),{maxZoom:17,padding:[60,60]})}
+function highlight(coords){L.polyline(coords,{pane:'routes',color:'#f3b54a',weight:9}).addTo(line);map.fitBounds(L.latLngBounds(coords),{maxZoom:17,padding:[60,60]})}
 function center(){map.setView([55.605,13.0038],13)}
 function dark(enabled){document.documentElement.style.filter=enabled?'invert(.88) hue-rotate(150deg)':'none'}
 </script></html>

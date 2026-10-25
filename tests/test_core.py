@@ -16,6 +16,7 @@ def test_classification_and_bans():
     assert classify({'highway':'path','foot':'designated','bicycle':'designated'})=='gemensam'
     assert classify({'cycleway:right':'lane'})=='fält'
     assert not allowed({'bicycle':'no'})
+    assert not allowed({'highway':'elevator'})
     assert not allowed({'access':'private'})
     assert allowed({'access':'no','bicycle':'yes'})
 
