@@ -3,12 +3,50 @@
 <div id="map"></div><script src="leaflet.js"></script><script src="qrc:///qtwebchannel/qwebchannel.js"></script><script>
 const map=L.map('map',{zoomControl:false}).setView([55.605,13.0038],13);
 L.control.zoom({position:'topright'}).addTo(map);
-const tiles=L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>-bidragsgivare',maxZoom:19}).addTo(map);
+const tiles=L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>-bidragsgivare',maxZoom:19});
+let background=null, swedenConfig=null, pending=null;
+async function refreshSweden(){
+ if(!swedenConfig || !background)return;
+ if(pending)pending.abort();pending=new AbortController();
+ const b=map.getBounds(), url=swedenConfig.url+'?bbox='+[b.getWest(),b.getSouth(),b.getEast(),b.getNorth()].join(',')+'&zoom='+map.getZoom();
+ try{
+  const response=await fetch(url,{signal:pending.signal});if(!response.ok)throw new Error('Kartindexet svarade inte');
+  const data=await response.json();if(!swedenConfig)return;
+  background.clearLayers();background.addData(data);
+  if(bridge)bridge.nationalStatus(data.truncated);
+ }catch(e){if(e.name!=='AbortError' && bridge)bridge.offlineMissing()}
+}
+map.on('moveend',refreshSweden);
+function backgroundMap(config){
+ if(pending)pending.abort();swedenConfig=null;
+ if(background)map.removeLayer(background);
+ map.setMaxBounds(null);
+ if(!config){background=tiles;map.setMinZoom(0);map.setMaxZoom(19);tiles.addTo(map);return}
+ if(config.kind==='sweden'){
+  swedenConfig=config;map.setMaxBounds(config.bounds);map.setMinZoom(4);map.setMaxZoom(19);
+  background=L.geoJSON(null,{renderer:L.canvas(),onEachFeature:(f,l)=>{if(f.properties.name){const el=document.createElement('span');el.textContent=f.properties.name;l.bindTooltip(el)}},style:f=>{
+   const p=f.properties;
+   if(p.kind==='coastline')return {color:'#8fb9ca',weight:1.5};
+   if(p.kind==='water')return {color:'#a9cbd8',fillColor:'#bedce6',weight:1,fillOpacity:.9};
+   if(p.kind==='park')return {color:'#c6d9bf',fillColor:'#d5e4cb',weight:1,fillOpacity:.9};
+   if(p.kind==='building')return {color:'#ccd4cd',fillColor:'#dce1d9',weight:.7,fillOpacity:1};
+   const cycle=p.road!=='övrig';return {color:cycle?colors[p.road]:['motorway','trunk','primary'].includes(p.highway)?'#d1b481':'#bcc6be',weight:cycle?3:2,opacity:1};
+  }}).addTo(map);
+  if(!map._offlineAttribution){map.attributionControl.addAttribution('© OpenStreetMap-bidragsgivare · Geofabrik · ODbL');map._offlineAttribution=true}
+  map.fitBounds(config.bounds);refreshSweden();return;
+ }
+ const safe=document.createElement('span');safe.textContent=config.attribution;
+ background=L.tileLayer(config.url,{minZoom:config.minZoom,maxZoom:config.maxZoom,attribution:safe.innerHTML,noWrap:true,bounds:config.bounds||undefined});
+ background.on('tileerror',()=>{if(bridge)bridge.offlineMissing()});
+ map.setMinZoom(config.minZoom);map.setMaxZoom(config.maxZoom);background.addTo(map);
+ if(config.bounds)map.fitBounds(config.bounds);
+}
+function sweden(){map.setView([62,16],Math.max(5,map.getMinZoom()))}
 const colors={'separat':'#16856a','gemensam':'#428cb4','fält':'#d9973c','cykelgata':'#9161ad','övrig':'#9ba8a2'};
 const layers={}; for(const [kind,color] of Object.entries(colors))layers[kind]=L.geoJSON(null,{style:{color,weight:3,opacity:.8}}).addTo(map);
 let line=L.layerGroup().addTo(map), markers=L.layerGroup().addTo(map), bridge=null;
 L.control.layers({},layers,{position:'topright'}).addTo(map);
-const legend=L.control({position:'bottomleft'});legend.onAdd=()=>{const el=L.DomUtil.create('div','legend');el.innerHTML='<b>Cykelvägar i Malmö</b><br>'+Object.entries(colors).map(([k,c])=>`<span style="color:${c}">●</span> ${k}`).join('<br>');return el};legend.addTo(map);
+const legend=L.control({position:'bottomleft'});legend.onAdd=()=>{const el=L.DomUtil.create('div','legend');el.innerHTML='<b>Cykelvägar</b><br>'+Object.entries(colors).map(([k,c])=>`<span style="color:${c}">●</span> ${k}`).join('<br>');return el};legend.addTo(map);
 const hint=L.control({position:'topleft'});hint.onAdd=()=>{const el=L.DomUtil.create('div','hint');el.textContent='Högerklicka för att välja start och mål';return el};hint.addTo(map);
 tiles.on('tileerror',()=>{if(bridge)bridge.mapError()});
 new QWebChannel(qt.webChannelTransport,ch=>{bridge=ch.objects.bridge;bridge.ready();});

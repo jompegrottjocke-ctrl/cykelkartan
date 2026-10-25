@@ -2,3 +2,4 @@ PySide6==6.8.3
 osmnx==2.0.6
 scipy==1.16.3
 scikit-learn==1.7.2
+osmium==4.2.0

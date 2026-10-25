@@ -37,7 +37,7 @@ def calculate(graph, points, mode=MODES[0], speed=15, detour=20, wait=False):
     g.remove_edges_from([(u,v,k) for u,v,k,d in g.edges(keys=True,data=True) if not allowed(d)])
     # OSM:s uttryckliga cykelundantag till enkelriktning.
     for u,v,k,d in list(g.edges(keys=True,data=True)):
-        if d.get('oneway:bicycle') == 'no' and not g.has_edge(v,u):
+        if d.get('oneway:bicycle') == 'no' and d.get('bicycle:backward') != 'no' and not g.has_edge(v,u):
             reverse=dict(d)
             if reverse.get('geometry') is not None:
                 from shapely.geometry import LineString
@@ -80,7 +80,9 @@ def calculate(graph, points, mode=MODES[0], speed=15, detour=20, wait=False):
         coords.extend(segment if not coords else segment[1:])
         name=d.get('name','Cykelbar väg utan angivet namn')
         if isinstance(name,list): name=', '.join(name)
-        instructions.append({'text':f'Följ {name} i {length:.0f} m', 'coords':segment})
+        if instructions and instructions[-1]['name']==name:
+            previous=instructions[-1];previous['meters']+=length;previous['coords'].extend(segment[1:]);previous['text']=f'Följ {name} i {previous["meters"]:.0f} m'
+        else:instructions.append({'text':f'Följ {name} i {length:.0f} m','name':name,'meters':length,'coords':segment})
     if not coords: raise ValueError('Punkterna ligger vid samma väganslutning. Välj punkter längre ifrån varandra.')
     signals=sum(g.nodes[n].get('highway')=='traffic_signals' for n in route)
     return dict(coords=coords,meters=total,minutes=minutes(total,speed),wait=signals*.35 if wait else 0,distribution=distribution,instructions=instructions,points=points,mode=mode)

@@ -1,19 +1,22 @@
 import json
 import sys
+from threading import Event
 from pathlib import Path
 from PySide6.QtCore import QObject, Signal, Slot, QRunnable, QThreadPool, QUrl, QStandardPaths, Qt
 from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QVBoxLayout,QHBoxLayout,QLabel,QPushButton,QLineEdit,QComboBox,QSlider,QCheckBox,QListWidget,QFileDialog,QInputDialog,QMessageBox,QSplitter)
+from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QVBoxLayout,QHBoxLayout,QLabel,QPushButton,QLineEdit,QComboBox,QSlider,QCheckBox,QListWidget,QFileDialog,QInputDialog,QMessageBox,QSplitter,QScrollArea)
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebEngineCore import QWebEngineSettings
 from PySide6.QtWebChannel import QWebChannel
 from app.identity import APP_NAME
 from app.storage import Store
 from app.services import MapData
+from app.offline import OfflineServer
 from app.routing import MODES, calculate, export_route, minutes
 
 ROOT=Path(__file__).resolve().parent.parent
 class Signals(QObject):
+    progress=Signal(str)
     done=Signal(object)
     error=Signal(str)
 class Job(QRunnable):
@@ -27,12 +30,20 @@ class Bridge(QObject):
     @Slot()
     def ready(self):
         self.w.map_ready=True
+        self.w.configure_background()
         pos=self.w.store.get('position',[55.605,13.0038,13])
         self.w.js(f'map.setView([{pos[0]},{pos[1]}],{pos[2]})')
-        self.w.work(self.w.data.load, self.w.loaded, 'Läser lokal kartdata …')
+        if self.w.sweden is not None:self.w.loaded(None)
+        else:self.w.work(self.w.data.load, self.w.loaded, 'Läser lokal kartdata …')
     @Slot()
     def mapError(self):
         self.w.statusBar().showMessage('Bakgrundskartan kunde inte hämtas. Kontrollera internet och karttjänstens åtkomst. Lokal ruttdata påverkas inte.')
+    @Slot(bool)
+    def nationalStatus(self,truncated):
+        self.w.statusBar().showMessage('Sverige offline · karta och ruttdata på disk' + (' · Många kartobjekt: zooma in för full detalj.' if truncated else ' · Adressökning kräver internet.'))
+    @Slot()
+    def offlineMissing(self):
+        self.w.statusBar().showMessage('Offlinekarta: kartplatta saknas på denna plats eller zoomnivå. Ingen internetkarta hämtas.')
     @Slot(str,float,float)
     def choose(self,kind,lat,lon): self.w.choose(kind,[lat,lon])
     @Slot(int,float,float)
@@ -53,6 +64,8 @@ class Window(QMainWindow):
         self.setWindowIcon(QIcon(str(ROOT/'assets/icons/cykel.ico')))
         directory=Path(QStandardPaths.writableLocation(QStandardPaths.AppLocalDataLocation))
         self.store=Store(directory/'settings.sqlite');self.data=MapData(directory/'map')
+        self.data.select_region(self.store.get('region','Malmö kommun'))
+        self.offline_server=None;self.sweden=None;self.cancel_event=Event()
         self.start=None;self.end=None;self.via=[];self.route=None;self.map_ready=False;self.jobs=[];self.busy=False
         splitter=QSplitter();self.setCentralWidget(splitter)
         panel=QWidget();panel.setMinimumWidth(340);panel.setMaximumWidth(440);layout=QVBoxLayout(panel);layout.setContentsMargins(24,24,24,20);layout.setSpacing(12)
@@ -75,12 +88,19 @@ class Window(QMainWindow):
             b=QPushButton(text);b.clicked.connect(fn);row.addWidget(b)
         layout.addLayout(row)
         row=QHBoxLayout()
-        for text,fn in [('Kopiera',self.copy),('PNG',self.png),('Centrera',lambda:self.js('center()'))]:
+        for text,fn in [('Kopiera',self.copy),('PNG',self.png),('Sverige',lambda:self.js('sweden()'))]:
             b=QPushButton(text);b.clicked.connect(fn);row.addWidget(b)
         layout.addLayout(row)
         self.theme=QCheckBox('Mörkt tema');self.theme.setChecked(self.store.get('dark',False));self.theme.toggled.connect(self.theme_changed);layout.addWidget(self.theme)
-        b=QPushButton('Uppdatera cykelkartan');b.clicked.connect(self.update);layout.addWidget(b)
-        splitter.addWidget(panel)
+        self.region_button=QPushButton('Ruttområde: '+self.data.region);self.region_button.clicked.connect(self.select_region);layout.addWidget(self.region_button)
+        row=QHBoxLayout()
+        b=QPushButton('Öppna offlinekarta');b.clicked.connect(self.open_offline);row.addWidget(b)
+        b=QPushButton('Internetkarta');b.clicked.connect(self.online);row.addWidget(b);layout.addLayout(row)
+        b=QPushButton('Hämta Sverige för offlinebruk');b.clicked.connect(self.install_sweden);layout.addWidget(b)
+        self.update_button=QPushButton('Hämta/uppdatera valt ruttområde');self.update_button.clicked.connect(self.update);layout.addWidget(self.update_button)
+        scroll=QScrollArea();scroll.setWidgetResizable(True);scroll.setWidget(panel);scroll.setMinimumWidth(360);scroll.setMaximumWidth(460)
+        self.cancel_button=QPushButton('Avbryt hämtning/bearbetning');self.cancel_button.setVisible(False);self.cancel_button.clicked.connect(self.cancel_event.set);layout.addWidget(self.cancel_button)
+        splitter.addWidget(scroll)
         self.web=QWebEngineView();splitter.addWidget(self.web);splitter.setSizes([390,990])
         self.web.settings().setAttribute(QWebEngineSettings.LocalContentCanAccessRemoteUrls,True)
         self.channel=QWebChannel();self.bridge=Bridge(self);self.channel.registerObject('bridge',self.bridge);self.web.page().setWebChannel(self.channel)
@@ -88,12 +108,20 @@ class Window(QMainWindow):
         self.speed_changed(self.speed.value());self.theme_changed(self.theme.isChecked())
         self.statusBar().showMessage('Kartplattor kräver internet. Lokal ruttberäkning fungerar efter datahämtning.')
     def js(self,code): self.web.page().runJavaScript(code)
-    def work(self,fn,done,status):
+    def work(self,fn,done,status,with_progress=False):
         if self.busy: return
         self.busy=True;self.go.setEnabled(False);self.statusBar().showMessage(status)
-        job=Job(fn);self.jobs.append(job)
+        self.cancel_event.clear();self.cancel_button.setVisible(with_progress)
+        job=Job(fn)
+        if with_progress:
+            def progress(text):
+                if self.cancel_event.is_set():raise ValueError('Hämtningen/bearbetningen avbröts. Tidigare karta behålls.')
+                job.signals.progress.emit(text)
+            job.fn=lambda:fn(progress)
+        job.signals.progress.connect(self.statusBar().showMessage)
+        self.jobs.append(job)
         def finish():
-            self.busy=False;self.go.setEnabled(True);self.jobs.remove(job)
+            self.busy=False;self.go.setEnabled(True);self.cancel_button.setVisible(False);self.jobs.remove(job)
         def success(value):
             finish();done(value)
         def failure(message):
@@ -113,26 +141,86 @@ class Window(QMainWindow):
     def search(self,kind,text):
         try:
             lat,lon=map(float,text.split(','))
-            if not 55.4<lat<55.8 or not 12.7<lon<13.4: raise ValueError()
+            if not 54<lat<70 or not 10<lon<25: raise ValueError()
             self.choose(kind,[lat,lon]);return
         except ValueError: pass
         if not text.strip(): return
         def lookup():
             from osmnx import geocode
-            return list(geocode(text+', Malmö, Sweden'))
+            return list(geocode(text+', Sweden'))
         self.work(lookup,lambda p:self.choose(kind,p),'Söker adress …')
     def loaded(self,g):
-        if g is None:self.statusBar().showMessage('Inget lokalt cykelvägnät. Klicka på Uppdatera cykelkartan.')
-        else:self.js('infrastructure('+json.dumps(self.data.features())+')');self.statusBar().showMessage('Lokalt vägnät tillgängligt. Senast uppdaterat: '+self.store.get('updated','okänt'))
+        if self.sweden is not None:
+            self.js('dark('+json.dumps(self.theme.isChecked())+')')
+            self.statusBar().showMessage('Sverige offline: karta och ruttdata finns lokalt. Adressökning kräver internet.');return
+        if g is None:self.statusBar().showMessage('Inga lokala ruttdata för valt område. Hämta Sverige för offlinebruk eller hämta valt ruttområde.')
+        else:self.js('infrastructure('+json.dumps(self.data.features())+')');self.statusBar().showMessage('Lokalt vägnät tillgängligt. Senast uppdaterat: '+self.store.get('updated:'+self.data.region,self.store.get('updated','okänt')))
         self.js('dark('+json.dumps(self.theme.isChecked())+')')
+    def configure_background(self):
+        path=self.store.get('offline_path')
+        if path:
+            try:
+                if path.endswith('.sqlite'):
+                    from app.national import SwedenServer
+                    server=SwedenServer(path)
+                else:server=OfflineServer(path)
+            except Exception as e:
+                self.statusBar().showMessage('Offlinekartan kunde inte öppnas. Välj filen igen: '+str(e))
+                return  # Ingen tyst övergång till internet.
+            previous=self.offline_server;self.offline_server=server;self.sweden=getattr(server,'data',None)
+            self.region_button.setEnabled(self.sweden is None);self.update_button.setEnabled(self.sweden is None)
+            self.js('infrastructure([]); backgroundMap('+json.dumps(server.config())+')')
+            if previous:previous.close()
+            self.statusBar().showMessage('Offlinekarta: '+Path(path).name)
+        else:self.js('backgroundMap(null)')
+    def install_sweden(self):
+        if self.busy:return
+        if self.sweden is not None:
+            QMessageBox.information(self,APP_NAME,'Sverige är redan installerat. Kartan och ruttdata används från disk utan ny hämtning.');return
+        reply=QMessageBox.question(self,APP_NAME,'Hämta hela Sverige från Geofabrik och förbered karta och ruttdata?\n\nDet kräver minst 8 GB ledigt utrymme. Hämtning och engångsbearbetning kan ta lång tid. Efteråt behövs ingen kommunhämtning för lokala cykelrutter. Adressökning kräver fortfarande internet.')
+        if reply!=QMessageBox.Yes:return
+        folder=self.data.directory/'sweden'
+        def install(progress):
+            from app.national import download_sweden,build_database
+            import uuid
+            source=download_sweden(folder,progress)
+            return build_database(source,folder/('sweden-'+uuid.uuid4().hex+'.sqlite'),progress)
+        self.work(install,self.use_offline,'Förbereder Sverige …',with_progress=True)
+    def open_offline(self):
+        path,_=QFileDialog.getOpenFileName(self,APP_NAME,'','Rasterkartpaket (*.mbtiles)')
+        if not path:return
+        from app.offline import TilePackage
+        self.work(lambda:TilePackage(path),lambda package:self.use_offline(str(package.path)),'Kontrollerar offlinekartan …')
+    def use_offline(self,path):
+        self.store.set('offline_path',path);self.configure_background()
+    def online(self):
+        self.store.set('offline_path',None)
+        if self.offline_server:self.offline_server.close();self.offline_server=None
+        self.sweden=None;self.region_button.setEnabled(True);self.update_button.setEnabled(True)
+        self.js('backgroundMap(null)');self.statusBar().showMessage('Internetkarta vald. Ruttdata finns separat på disk.')
+    def select_region(self):
+        if self.busy:return
+        region,ok=QInputDialog.getText(self,APP_NAME,'Ort eller kommun i Sverige:',text=self.data.region)
+        if not ok or not region.strip():return
+        self.data.select_region(region);self.store.set('region',self.data.region)
+        self.region_button.setText('Ruttområde: '+self.data.region)
+        self.route=None;self.steps.clear();self.js('line.clearLayers(); infrastructure([])')
+        self.work(self.data.load,self.loaded,'Läser sparat ruttområde från disk …')
     def update(self):
-        def done(stamp):self.store.set('updated',stamp);self.loaded(self.data.graph)
-        self.work(self.data.update,done,'Hämtar Malmö kommuns cykelvägnät. Detta kan ta flera minuter …')
+        def done(stamp):self.store.set('updated:'+self.data.region,stamp);self.loaded(self.data.graph)
+        self.work(self.data.update,done,'Hämtar '+self.data.region+'. Detta görs endast på begäran och sparas lokalt …')
     def compute(self):
-        if self.data.graph is None:QMessageBox.information(self,APP_NAME,'Uppdatera cykelkartan för att hämta ett lokalt vägnät först.');return
+        if self.data.graph is None and self.sweden is None:QMessageBox.information(self,APP_NAME,'Hämta Sverige för offlinebruk eller hämta valt ruttområde först.');return
         if not self.start or not self.end:QMessageBox.information(self,APP_NAME,'Välj både start och destination.');return
         args=(self.data.graph,self.points(),self.mode.currentText(),self.speed.value(),[10,20,30][self.detour.currentIndex()],self.wait.isChecked())
-        self.work(lambda:calculate(*args),self.result,'Beräknar cykelrutt …')
+        national=self.sweden
+        def route_job():
+            if national is None:return calculate(*args)
+            import networkx as nx
+            try:graph=national.graph(args[1]);return calculate(graph,*args[1:])
+            except nx.NetworkXNoPath:
+                graph=national.graph(args[1],padding=.5);return calculate(graph,*args[1:])
+        self.work(route_job,self.result,'Beräknar cykelrutt från lokala data …')
     def result(self,r):
         self.route=r;self.js('route('+json.dumps(r['coords'])+')');self.steps.clear();self.steps.addItems([s['text'] for s in r['instructions']]);self.render_summary();self.statusBar().showMessage('Rutt beräknad från OpenStreetMap. Prioriteringar är modeller, ingen säkerhetsgaranti.')
     def render_summary(self):
@@ -170,7 +258,9 @@ class Window(QMainWindow):
     def closeEvent(self,event):
         if self.busy:
             QMessageBox.information(self,APP_NAME,'Vänta tills det pågående arbetet är klart.');event.ignore()
-        else:event.accept()
+        else:
+            if self.offline_server:self.offline_server.close()
+            event.accept()
 
 def run():
     app=QApplication(sys.argv);app.setApplicationName(APP_NAME);app.setOrganizationName('CykelframjandetMalmo')

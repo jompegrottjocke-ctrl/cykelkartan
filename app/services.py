@@ -1,4 +1,5 @@
 import os
+import hashlib
 from pathlib import Path
 from datetime import datetime, timezone
 import osmnx as ox
@@ -20,12 +21,18 @@ class MapData:
         if self.path.exists(): self.graph=ox.load_graphml(self.path)
         return self.graph
 
+    def select_region(self, region):
+        self.region=region.strip()
+        if not self.region: raise ValueError('Ange en ort eller kommun i Sverige.')
+        self.path=self.directory/('malmo.graphml' if self.region=='Malmö kommun' else hashlib.sha256(self.region.casefold().encode()).hexdigest()[:20]+'.graphml')
+        self.graph=None
+
     def update(self):
         # Kommungränsen hämtas av OSMnx. Tidigare fungerande graf ersätts först efter validering.
-        graph=ox.graph_from_place('Malmö kommun, Skåne, Sweden',network_type='bike',simplify=True)
+        graph=ox.graph_from_place(getattr(self,'region','Malmö kommun')+', Sweden',network_type='bike',simplify=True)
         if len(graph)<100 or graph.number_of_edges()<100:
             raise ValueError('Datamängden är oväntat liten. Tidigare karta behålls.')
-        temp=self.directory/'malmo-new.graphml'
+        temp=self.path.with_suffix('.new.graphml')
         ox.save_graphml(graph,temp)
         checked=ox.load_graphml(temp)
         os.replace(temp,self.path)
