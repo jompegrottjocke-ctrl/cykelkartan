@@ -11,6 +11,13 @@ jobs:
       - name: Bygg och testa
         shell: cmd
         run: build_windows.bat
+      - name: Starta och kontrollera färdig EXE
+        shell: pwsh
+        run: |
+          & .venv\Scripts\python.exe -c "import subprocess; subprocess.run(['dist/CykelframjandetMalmo/CykelframjandetMalmo.exe', '--smoke-test'], check=True, timeout=90)"
+          $result = $LASTEXITCODE
+          if (Test-Path smoke-report.log) { Get-Content smoke-report.log }
+          if ($result -ne 0) { exit $result }
       - name: Skapa installationsprogram
         shell: cmd
         run: '"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\windows.iss'

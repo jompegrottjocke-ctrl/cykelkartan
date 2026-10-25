@@ -9,7 +9,7 @@ Appens namn är fortfarande **Cykelfrämjandet Malmö**. Kart- och ruttområdet 
 3. Vänta medan det lokala kartindexet byggs. Förloppet visas i statusfältet och arbetet kan avbrytas. Stäng inte av datorn under installationen. En misslyckad installation ersätter inte en tidigare fungerande karta.
 4. Därefter väljs offlinekartan automatiskt och återöppnas från disk nästa gång. Knappen **Sverige** visar landets översikt. Zooma in för cykelvägar och byggnader.
 
-Räkna med minst 8 GB ledigt utrymme under installationen. Filstorlek och tid varierar med aktuell datamängd, dator och anslutning. Kartfilen, det färdiga indexet och tillfälliga filer kan tillsammans kräva mer utrymme; appen gör även en kontroll mot nedladdningens rapporterade storlek. Originalfilen behålls för att kunna återanvändas efter en avbruten bearbetning. Den distribueras separat från programmet och ingår inte i EXE-filen eller Git-repositoriet.
+Räkna med minst 8 GB ledigt diskutrymme under installationen. På Windows används ett tillfälligt nodindex i minnet under bearbetningen; 16 GB RAM rekommenderas för hela Sverige. Vid vanlig användning läses kartan från disk och ruttdata begränsas till valt område. Filstorlek och tid varierar med aktuell datamängd, dator och anslutning. Kartfilen, det färdiga indexet och tillfälliga filer kan tillsammans kräva mer utrymme; appen gör även en kontroll mot nedladdningens rapporterade storlek. Originalfilen behålls för att kunna återanvändas efter en avbruten bearbetning. Den distribueras separat från programmet och ingår inte i EXE-filen eller Git-repositoriet.
 
 ## Vad fungerar utan internet?
 

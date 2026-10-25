@@ -84,7 +84,10 @@ def build_database(source, destination, progress=lambda text:None):
         handler=Handler()
         def parse():
             try:
-                handler.apply_file(str(source),locations=True,idx='sparse_file_array,'+str(index))
+                # Windows låser libosmiums filindex även efter parsning. Ett sorterat
+                # minnesindex undviker den låsningen; det färdiga kartindexet är på disk.
+                node_index='sparse_mem_array' if os.name=='nt' else 'sparse_file_array,'+str(index)
+                handler.apply_file(str(source),locations=True,idx=node_index)
             except Exception as error:
                 # Frigör native-filhandtag som annars hålls kvar av traceback på Windows.
                 message=str(error)

@@ -2,7 +2,7 @@ import json
 import sys
 from threading import Event
 from pathlib import Path
-from PySide6.QtCore import QObject, Signal, Slot, QRunnable, QThreadPool, QUrl, QStandardPaths, Qt
+from PySide6.QtCore import QObject, Signal, Slot, QRunnable, QThreadPool, QUrl, QStandardPaths, Qt, QTimer
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QVBoxLayout,QHBoxLayout,QLabel,QPushButton,QLineEdit,QComboBox,QSlider,QCheckBox,QListWidget,QFileDialog,QInputDialog,QMessageBox,QSplitter,QScrollArea)
 from PySide6.QtWebEngineWidgets import QWebEngineView
@@ -59,10 +59,10 @@ class Bridge(QObject):
     def position(self,lat,lon,zoom): self.w.store.set('position',[lat,lon,zoom])
 
 class Window(QMainWindow):
-    def __init__(self):
+    def __init__(self,directory=None):
         super().__init__(); self.setWindowTitle(APP_NAME); self.resize(1380,900)
         self.setWindowIcon(QIcon(str(ROOT/'assets/icons/cykel.ico')))
-        directory=Path(QStandardPaths.writableLocation(QStandardPaths.AppLocalDataLocation))
+        directory=Path(directory) if directory is not None else Path(QStandardPaths.writableLocation(QStandardPaths.AppLocalDataLocation))
         self.store=Store(directory/'settings.sqlite');self.data=MapData(directory/'map')
         self.data.select_region(self.store.get('region','Malmö kommun'))
         self.offline_server=None;self.sweden=None;self.cancel_event=Event()
@@ -157,6 +157,7 @@ class Window(QMainWindow):
         else:self.js('infrastructure('+json.dumps(self.data.features())+')');self.statusBar().showMessage('Lokalt vägnät tillgängligt. Senast uppdaterat: '+self.store.get('updated:'+self.data.region,self.store.get('updated','okänt')))
         self.js('dark('+json.dumps(self.theme.isChecked())+')')
     def configure_background(self):
+        if getattr(self,'smoke',False):return
         path=self.store.get('offline_path')
         if path:
             try:
@@ -177,7 +178,7 @@ class Window(QMainWindow):
         if self.busy:return
         if self.sweden is not None:
             QMessageBox.information(self,APP_NAME,'Sverige är redan installerat. Kartan och ruttdata används från disk utan ny hämtning.');return
-        reply=QMessageBox.question(self,APP_NAME,'Hämta hela Sverige från Geofabrik och förbered karta och ruttdata?\n\nDet kräver minst 8 GB ledigt utrymme. Hämtning och engångsbearbetning kan ta lång tid. Efteråt behövs ingen kommunhämtning för lokala cykelrutter. Adressökning kräver fortfarande internet.')
+        reply=QMessageBox.question(self,APP_NAME,'Hämta hela Sverige från Geofabrik och förbered karta och ruttdata?\n\nDet kräver minst 8 GB ledigt diskutrymme. 16 GB RAM rekommenderas vid bearbetning på Windows. Hämtning och engångsbearbetning kan ta lång tid. Efteråt behövs ingen kommunhämtning för lokala cykelrutter. Adressökning kräver fortfarande internet.')
         if reply!=QMessageBox.Yes:return
         folder=self.data.directory/'sweden'
         def install(progress):
@@ -264,4 +265,29 @@ class Window(QMainWindow):
 
 def run():
     app=QApplication(sys.argv);app.setApplicationName(APP_NAME);app.setOrganizationName('CykelframjandetMalmo')
-    window=Window();window.show();sys.exit(app.exec())
+    smoke='--smoke-test' in sys.argv
+    from tempfile import TemporaryDirectory
+    temporary=TemporaryDirectory() if smoke else None
+    window=Window(temporary.name if temporary else None);window.smoke=smoke;window.show()
+    if smoke:
+        def verify():
+            try:
+                from tempfile import TemporaryDirectory
+                from app.national import build_database,SwedenData
+                assert window.map_ready, 'Kartans WebChannel startade inte'
+                with TemporaryDirectory() as folder:
+                    root=Path(folder);source=root/'test.osm'
+                    source.write_text('<osm version="0.6"><node id="1" lat="55.6" lon="13"/><node id="2" lat="55.601" lon="13"/><way id="1"><nd ref="1"/><nd ref="2"/><tag k="highway" v="cycleway"/></way></osm>',encoding='utf-8')
+                    dest=root/'map.sqlite';build_database(source,dest)
+                    points=[[55.6,13],[55.601,13]]
+                    result=calculate(SwedenData(dest).graph(points),points)
+                    assert 100<result['meters']<120
+                Path('smoke-report.log').write_text('OK: Qt WebChannel, paketerade kartresurser, OSM-import och lokal rutt.',encoding='utf-8')
+                app.exit(0)
+            except Exception as error:
+                Path('smoke-report.log').write_text(repr(error),encoding='utf-8');app.exit(1)
+        QTimer.singleShot(8000,verify)
+    exit_code=app.exec()
+    if temporary:
+        window.store.db.close();temporary.cleanup()
+    sys.exit(exit_code)
