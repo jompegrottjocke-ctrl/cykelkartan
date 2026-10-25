@@ -73,7 +73,7 @@ def build_database(source, destination, progress=lambda text:None):
                 raise ValueError('Kartfilen saknar nodpositioner. Tidigare karta behålls.')
             coords=[[n.lon,n.lat] for n in way.nodes];nodes=[n.ref for n in way.nodes]
             xs=[p[0] for p in coords];ys=[p[1] for p in coords]
-            minzoom=4 if highway in ('motorway','trunk','primary') else 8 if highway in ('secondary','tertiary') else 13 if kind=='building' else 11
+            minzoom=4 if highway in ('motorway','trunk') or kind=='coastline' else 7 if highway=='primary' else 8 if highway in ('secondary','tertiary') else 13 if kind=='building' else 11
             db.execute('INSERT INTO ways VALUES (?,?,?,?,?,?)',(way.id,kind,json.dumps(tags),json.dumps(nodes),json.dumps(coords),minzoom))
             db.execute('INSERT INTO bounds VALUES (?,?,?,?,?)',(way.id,min(xs),max(xs),min(ys),max(ys)))
             self.count+=1
@@ -82,7 +82,17 @@ def build_database(source, destination, progress=lambda text:None):
     try:
         progress('Bygger lokalt kartindex. Detta görs en gång och kan ta lång tid …')
         handler=Handler()
-        handler.apply_file(str(source),locations=True,idx='sparse_file_array,'+str(index))
+        def parse():
+            try:
+                handler.apply_file(str(source),locations=True,idx='sparse_file_array,'+str(index))
+            except Exception as error:
+                # Frigör native-filhandtag som annars hålls kvar av traceback på Windows.
+                message=str(error)
+                error.__traceback__=None
+                return message
+            return None
+        error=parse()
+        if error is not None:raise ValueError(error)
         if handler.count==0:raise ValueError('Kartfilen innehåller inga användbara kartobjekt.')
         progress('Optimerar kartindexet …')
         db.execute('CREATE INDEX ways_zoom ON ways(minzoom)')
@@ -99,11 +109,13 @@ class SwedenData:
     def __init__(self,path):
         self.path=Path(path)
         with database(path) as db:
-            db.execute('SELECT id,kind,tags,nodes,coords FROM ways LIMIT 1').fetchone()
+            db.execute('SELECT id,kind,tags,nodes,coords,minzoom FROM ways LIMIT 1').fetchone()
             self.metadata=dict(db.execute('SELECT key,value FROM metadata'))
     def rows(self,bbox,limit,zoom=22,roads_only=False):
         west,south,east,north=bbox
         with database(self.path) as db:
+            if zoom<10:
+                return db.execute('SELECT w.id,w.kind,w.tags,w.nodes,w.coords FROM ways w INDEXED BY ways_zoom CROSS JOIN bounds b ON b.id=w.id WHERE w.minzoom<=? AND b.west<=? AND b.east>=? AND b.south<=? AND b.north>=? LIMIT ?', (zoom,east,west,north,south,limit)).fetchall()
             return db.execute('SELECT w.id,w.kind,w.tags,w.nodes,w.coords FROM bounds b JOIN ways w ON w.id=b.id WHERE b.west<=? AND b.east>=? AND b.south<=? AND b.north>=? AND w.minzoom<=? AND (?=0 OR w.kind=?) LIMIT ?', (east,west,north,south,zoom,int(roads_only),'road',limit)).fetchall()
     def features(self,bbox,zoom):
         rows=self.rows(bbox,15001,zoom);features=[]

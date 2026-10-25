@@ -38,7 +38,7 @@ def national(tmp_path):
     source.write_text('''<?xml version="1.0"?><osm version="0.6">
     <node id="1" lat="59.330" lon="18.060"/><node id="2" lat="59.330" lon="18.061"/><node id="3" lat="59.331" lon="18.061"/>
     <way id="10"><nd ref="1"/><nd ref="2"/><tag k="highway" v="residential"/><tag k="oneway" v="yes"/><tag k="oneway:bicycle" v="no"/><tag k="name" v="Testvägen"/></way>
-    <way id="11"><nd ref="2"/><nd ref="3"/><tag k="highway" v="cycleway"/></way></osm>''')
+    <way id="11"><nd ref="2"/><nd ref="3"/><tag k="highway" v="cycleway"/></way></osm>''',encoding='utf-8')
     build_database(source,dest)
     return dest
 
